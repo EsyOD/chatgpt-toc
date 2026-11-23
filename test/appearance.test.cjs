@@ -42,6 +42,17 @@ async function openAppearanceFixture(page) {
   };
 }
 
+async function setNarrowViewport(page) {
+  await page.setViewportSize({ width: 360, height: 560 });
+  // The extension clamps its position on resize and ResizeObserver callbacks.
+  await page.waitForFunction(() => {
+    const { left, top, right, bottom } = document.getElementById("chatgpt-question-toc-extension")
+      .shadowRoot.querySelector(".panel").getBoundingClientRect();
+    return innerWidth === 360 && innerHeight === 560 &&
+      left >= 0 && top >= 0 && right <= innerWidth + 1 && bottom <= innerHeight + 1;
+  });
+}
+
 test("Appearance settings persist, fit narrow windows and reset", () => withPage({ width: 1180, height: 850 }, async (page) => {
   const { host, launcher, panel, settings } = await openAppearanceFixture(page);
   const size = async (name, value) => {
@@ -66,9 +77,7 @@ test("Appearance settings persist, fit narrow windows and reset", () => withPage
   await launcher.click();
   bounds = await panel.boundingBox();
   assert.deepEqual([bounds.x, bounds.y, bounds.width, bounds.height], [70, 65, 480, 420]);
-  await page.setViewportSize({ width: 360, height: 560 });
-  bounds = await panel.boundingBox();
-  assert.ok(bounds.x >= 0 && bounds.y >= 0 && bounds.x + bounds.width <= 360 && bounds.y + bounds.height <= 560);
+  await setNarrowViewport(page);
   await settings.click();
   await page.getByRole("combobox", { name: "停靠位置" }).selectOption("bottom-left");
   await page.getByRole("combobox", { name: "停靠位置" }).selectOption("top-right");
@@ -125,9 +134,7 @@ test("Pointer and keyboard move or resize the directory", () => withPage({ width
   assert.deepEqual([moved.x, moved.y], [closed.x - 100, closed.y - 80]);
   await launcher.click();
   assert.equal(await panel.isVisible(), true);
-  await page.setViewportSize({ width: 360, height: 560 });
-  bounds = await panel.boundingBox();
-  assert.ok(bounds.x >= 0 && bounds.y >= 0 && bounds.x + bounds.width <= 360 && bounds.y + bounds.height <= 560);
+  await setNarrowViewport(page);
   await settings.click();
   assert.equal(await page.getByRole("combobox", { name: "停靠位置" }).inputValue(), "free");
   await page.getByRole("button", { name: "恢复默认" }).click();
