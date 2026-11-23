@@ -9,10 +9,12 @@
   const CODEX_MESSAGE = "[data-user-message-bubble]";
   const MESSAGE_MARKERS = `${CHATGPT_MARKERS}, ${CODEX_MESSAGE}`;
   const CODEX_TURN = "[data-turn-transcript], [data-turn-key], [data-chatgpt-conversation-turn]";
-  const INACTIVE = '[hidden], [inert], [aria-hidden="true"]';
-  const CONVERSATION_PATH = /(?:^|\/)(?:c|share|codex|work)(?:\/|$)/;
-  const CONVERSATION_UI = '#prompt-textarea, #mobile-composer-prompt, ' + CODEX_TRANSCRIPT;
+  const INACTIVE = '[hidden], [inert], [aria-hidden="true"], [data-app-shell-active-page="false"]';
+  const CONVERSATION_PATH = /(?:^|\/)(?:c|share|codex|work|remote)(?:\/|$)/;
   const RAIL = "[data-rail-chat-transcript]";
+  const MAIN = 'main, [role="main"], [data-app-shell-focus-area="main"]';
+  const TASK_PATH = /(?:^|\/)(?:codex|work|remote)(?:\/|$)/;
+  const CONVERSATION_UI = `#prompt-textarea, #mobile-composer-prompt, ${CODEX_TRANSCRIPT}, ${RAIL}`;
   const ROLE_ATTRIBUTES = ["data-message-author-role", "data-turn", "data-user-message-bubble", "data-thread-user-message-navigation-content", "data-turn-transcript", "data-turn-key", "data-chatgpt-conversation-turn"];
   const EXCLUDED_TEXT = 'button, [role="button"], [aria-hidden="true"], [hidden], .sr-only, [data-markdown-copy="exclude"], [contenteditable="true"], script, style, svg';
   if (document.getElementById(HOST_ID)) return;
@@ -136,7 +138,7 @@
   }
 
   function collectMessages() {
-    const main = Array.from(document.querySelectorAll('main, [role="main"]')).find((element) =>
+    const main = Array.from(document.querySelectorAll(MAIN)).find((element) =>
       isVisible(element) && !element.closest(RAIL) && element.querySelector(MESSAGE_MARKERS));
     const transcripts = Array.from(document.querySelectorAll(CODEX_TRANSCRIPT)).filter((element) =>
       isVisible(element) && !element.closest(RAIL) && element.querySelector(MESSAGE_MARKERS));
@@ -144,14 +146,25 @@
       (main?.querySelector(CHATGPT_MARKERS) ? null : transcripts[0]);
     const scope = main && (!transcript || main.contains(transcript)) ? main : transcript ?? document;
 
-    const candidates = new Set(Array.from(scope.querySelectorAll(MESSAGE_MARKERS)).filter((element) => {
+    let markers = Array.from(scope.querySelectorAll(MESSAGE_MARKERS)).filter((element) => {
       if (element.closest(RAIL) || !isVisible(element)) return false;
       const container = element.closest(CODEX_TRANSCRIPT);
       if (container && container !== transcript) return false;
       return element.matches(CHATGPT_MARKERS) || container ||
         element.closest(`${CODEX_TURN}, ${CHATGPT_MARKERS}`) ||
         (main?.contains(element) && CONVERSATION_PATH.test(location.pathname));
-    }));
+    });
+    if (!markers.length) {
+      // Work can show the task's conversation alongside a document or another app.
+      for (const rail of document.querySelectorAll(RAIL)) {
+        if (!TASK_PATH.test(location.pathname) && !rail.closest("[data-app-shell-focus-area]")) continue;
+        markers = Array.from(rail.querySelectorAll(MESSAGE_MARKERS)).filter((element) =>
+          element.closest(RAIL) === rail && isVisible(element));
+        if (markers.length) break;
+      }
+    }
+
+    const candidates = new Set(markers);
     const wrappers = new Map();
     for (const element of candidates) {
       for (let parent = element.parentElement.closest(MESSAGE_MARKERS); parent;
@@ -369,7 +382,8 @@
     characterData: true,
     attributes: true,
     attributeFilter: [
-      ...ROLE_ATTRIBUTES, "data-message-id", "data-rail-chat-transcript", "aria-hidden", "hidden", "inert",
+      ...ROLE_ATTRIBUTES, "data-message-id", "data-rail-chat-transcript", "data-app-shell-active-page",
+      "data-app-shell-focus-area", "aria-hidden", "hidden", "inert",
     ],
   });
   const themeObserver = new MutationObserver(updateTheme);
