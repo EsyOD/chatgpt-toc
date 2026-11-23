@@ -20,3 +20,18 @@ Chrome 扩展，在 ChatGPT 和 Codex 网页对话右下角添加一个提问目
 需要 Chrome 105 或更新版本。扩展仅在 `chatgpt.com` 和旧入口 `chat.openai.com` 上运行。问题文字在当前页面内处理。扩展仅在本机存储目录外观设置，无网络请求或后台服务。
 
 目录读取当前展示的对话分支。当 Codex 分段渲染长对话时，目录会保留已读取的提问。展开目录后可点击「读取完整对话」，扩展会逐段滚动读取，并在完成后返回原位置。若 ChatGPT 改变了消息的页面标记，扩展可能需要更新。
+
+## 测试与打包
+
+GitHub Actions 在推送代码或更新 Pull Request 时运行 Chromium 回归测试。通过后会生成带版本号的安装 ZIP，可以在对应运行的 **Artifacts** 中下载。
+
+在本地复现同样的流程，需安装 Node.js 24、Git 和 `unzip`。
+
+```bash
+npm ci
+npx playwright install --only-shell chromium
+npm test
+npm run package
+```
+
+打包读取当前提交里扩展的文件和 `manifest.json` 版本号，生成 `dist/chatgpt-toc-v<版本>.zip`。自动打包产物位于 Actions，正式版本可以再将 ZIP 上传到 GitHub Release。
