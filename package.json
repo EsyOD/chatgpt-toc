@@ -1,0 +1,11 @@
+{
+  "name": "chatgpt-toc",
+  "private": true,
+  "scripts": {
+    "test": "node --check content.js && node --check styles.js && node --test test/*.test.cjs",
+    "package": "bash scripts/package-extension.sh"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}
