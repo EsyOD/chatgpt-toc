@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT 提问目录",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "description": "在 ChatGPT 和 Codex 网页对话旁显示你的提问目录，支持搜索与跳转。",
   "minimum_chrome_version": "105",
   "icons": {

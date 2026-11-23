@@ -288,6 +288,19 @@ const CHATGPT_QUESTION_TOC_STYLES = `
 
   .question[aria-current="location"] code { background: var(--surface); }
 
+  .read-all {
+    align-self: flex-start;
+    margin: 8px 12px 11px;
+    padding: 4px 9px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--accent);
+    font-size: 12px;
+  }
+
+  .read-all:hover { background: var(--field); }
+
   .empty {
     padding: 25px 16px 30px;
     color: var(--muted);

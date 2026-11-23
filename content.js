@@ -11,6 +11,8 @@
   const CODEX_TURN = "[data-turn-transcript], [data-turn-key], [data-chatgpt-conversation-turn]";
   const INACTIVE = '[hidden], [inert], [aria-hidden="true"], [data-app-shell-active-page="false"]';
   const CONVERSATION_PATH = /(?:^|\/)(?:c|share|codex|work|remote)(?:\/|$)/;
+  const VIRTUAL_TURN = "[data-virtualized-turn]";
+  const TURN_ID = "[data-turn-key], [data-content-search-turn-key]";
   const RAIL = "[data-rail-chat-transcript]";
   const MAIN = 'main, [role="main"], [data-app-shell-focus-area="main"]';
   const TASK_PATH = /(?:^|\/)(?:codex|work|remote)(?:\/|$)/;
@@ -56,10 +58,11 @@
   const list = create("ol", { className: "questions", ariaLabel: "本对话的提问" });
   const empty = create("p", { className: "empty", hidden: true });
   empty.setAttribute("role", "status");
+  const readAll = create("button", { className: "read-all", type: "button", hidden: true }, "读取完整对话");
   const panel = create("section", { className: "panel", id: "question-panel", hidden: true },
     header,
     create("label", { className: "search" }, create("span", { className: "search-icon", ariaHidden: "true" }), search),
-    create("div", { className: "results" }, list, empty));
+    create("div", { className: "results" }, list, empty), readAll);
   panel.setAttribute("aria-labelledby", "panel-title");
   root.append(launcher, panel);
   document.documentElement.append(host);
@@ -71,6 +74,11 @@
 
   let messages = [];
   let activeKey = null;
+  let indexedScope = null;
+  let virtualMode = false;
+  let transcriptScroller = null;
+  let scan = null;
+  let pendingJump = null;
   let currentUrl = location.href;
   let refreshFrame = 0;
   let scrollFrame = 0;
@@ -154,15 +162,23 @@
         element.closest(`${CODEX_TURN}, ${CHATGPT_MARKERS}`) ||
         (main?.contains(element) && CONVERSATION_PATH.test(location.pathname));
     });
+    let messageScope = transcript ?? main ?? document.body;
     if (!markers.length) {
       // Work can show the task's conversation alongside a document or another app.
       for (const rail of document.querySelectorAll(RAIL)) {
         if (!TASK_PATH.test(location.pathname) && !rail.closest("[data-app-shell-focus-area]")) continue;
         markers = Array.from(rail.querySelectorAll(MESSAGE_MARKERS)).filter((element) =>
           element.closest(RAIL) === rail && isVisible(element));
-        if (markers.length) break;
+        if (markers.length) {
+          messageScope = rail;
+          break;
+        }
       }
     }
+    if (!markers.length && indexedScope?.isConnected && isVisible(indexedScope)) {
+      messageScope = indexedScope;
+    }
+    const virtual = Boolean(messageScope.querySelector(VIRTUAL_TURN) || messageScope.closest(VIRTUAL_TURN));
 
     const candidates = new Set(markers);
     const wrappers = new Map();
@@ -175,20 +191,30 @@
 
     const found = [];
     const seen = new Set();
+    const turnOrdinals = new Map();
+    const scroller = markers.length && (virtual || virtualMode) ? scrollContainer(markers[0]) : null;
+    const scrollTop = scroller?.scrollTop ?? window.scrollY;
+    const scrollOrigin = scroller?.getBoundingClientRect().top ?? 0;
     for (const element of candidates) {
       // A turn can contain more than one prompt, including follow-up instructions.
       if (wrappers.has(element)) continue;
       const role = element.closest(CHATGPT_MESSAGE);
-      const key = element.getAttribute("data-message-id") ||
-        (wrappers.get(role) === 1 && role.getAttribute("data-message-id")) || element;
+      const turn = element.closest(TURN_ID);
+      const turnId = turn?.getAttribute("data-turn-key") || turn?.getAttribute("data-content-search-turn-key");
+      const ordinal = turn ? (turnOrdinals.get(turn) ?? 0) : 0;
+      if (turn) turnOrdinals.set(turn, ordinal + 1);
+      const messageId = element.getAttribute("data-message-id") ||
+        (wrappers.get(role) === 1 && role.getAttribute("data-message-id"));
+      const key = messageId ? `message:${messageId}` : turnId ? `turn:${turnId}:${ordinal}` : element;
       if (seen.has(key)) continue;
       seen.add(key);
 
       const parts = questionParts(element);
       const label = parts.map(({ text }) => text).join("");
-      found.push({ element, key, label, parts, searchable: searchText(label) });
+      const position = virtual || virtualMode ? scrollTop + element.getBoundingClientRect().top - scrollOrigin : 0;
+      found.push({ element, key, label, parts, searchable: searchText(label), position });
     }
-    return found;
+    return { found, scope: messageScope, virtual, scroller };
   }
 
   function updateActive(key) {
@@ -205,7 +231,9 @@
     scrollFrame = 0;
     if (panel.hidden || !messages.length) return;
 
-    const scroller = scrollContainer(messages[0].element);
+    const firstMounted = messages.find(({ element }) => element?.isConnected);
+    if (!firstMounted) return;
+    const scroller = scrollContainer(firstMounted.element);
     const bounds = scroller?.getBoundingClientRect();
     const top = Math.max(0, bounds?.top ?? 0);
     const bottom = Math.min(innerHeight, bounds?.bottom ?? innerHeight);
@@ -216,7 +244,7 @@
     const readingLine = atEnd ? bottom - 1 : top + readingOffset(bottom - top) + 2;
     let key = null;
     for (const message of messages) {
-      if (!message.element.isConnected) continue;
+      if (!message.element?.isConnected) continue;
       const rect = message.element.getBoundingClientRect();
       if (rect.top <= readingLine) key = message.key;
       else {
@@ -241,9 +269,21 @@
   }
 
   function jumpTo(key) {
+    scan = null;
     const message = messages.find((entry) => entry.key === key);
-    if (!message?.element.isConnected) return;
-    const { element } = message;
+    if (!message) return;
+    if (!message.element?.isConnected) {
+      pendingJump = { key, expires: performance.now() + 3000 };
+      const scroller = transcriptScroller?.isConnected ? transcriptScroller : window;
+      scroller.scrollTo({ top: Math.max(0, message.position - readingOffset(scroller.clientHeight ?? innerHeight)), behavior: "instant" });
+      queueRefresh();
+      return;
+    }
+    pendingJump = null;
+    jumpToMounted(message);
+  }
+
+  function jumpToMounted({ key, element }) {
     const behavior = reducedMotion.matches ? "instant" : "smooth";
     const scroller = scrollContainer(element);
     const bounds = scroller?.getBoundingClientRect();
@@ -300,7 +340,10 @@
     syncLauncher();
     launcherCount.hidden = !messages.length;
     launcherCount.textContent = String(messages.length);
-    count.textContent = query ? `${rows.size} / ${messages.length} 条提问` : `本对话共 ${messages.length} 条提问`;
+    count.textContent = query ? `${rows.size} / ${messages.length} 条提问` :
+      `${virtualMode ? "已读取" : "本对话共"} ${messages.length} 条提问`;
+    readAll.hidden = !virtualMode;
+    readAll.textContent = scan ? "停止读取" : "读取完整对话";
     empty.hidden = rows.size > 0;
     empty.textContent = empty.hidden ? "" : query ? "没有匹配的提问" : "暂未识别到提问";
     updateActive(activeKey);
@@ -308,8 +351,28 @@
 
   function refresh() {
     refreshFrame = 0;
-    const next = collectMessages();
-    const changed = next.length !== messages.length || next.some((message, index) =>
+    const { found, scope, virtual, scroller } = collectMessages();
+    const sameScope = indexedScope === scope;
+    const wasVirtual = virtualMode;
+    virtualMode = virtual || (sameScope && virtualMode);
+    indexedScope = scope;
+    transcriptScroller = scroller ?? (sameScope ? transcriptScroller : null);
+    let next = found;
+
+    if (virtualMode && sameScope) {
+      const indexed = new Map(found.map((message) => [message.key, message]));
+      for (const previous of messages) {
+        if (typeof previous.key === "string" && !indexed.has(previous.key) &&
+            !previous.element?.isConnected) {
+          indexed.set(previous.key, { ...previous, element: null });
+        }
+      }
+      next = Array.from(indexed.values()).sort((left, right) => left.position - right.position);
+    } else if (!sameScope) {
+      pendingJump = null;
+    }
+
+    const changed = virtualMode !== wasVirtual || next.length !== messages.length || next.some((message, index) =>
       message.key !== messages[index].key || message.label !== messages[index].label ||
       message.parts.length !== messages[index].parts.length ||
       message.parts.some((part, partIndex) => {
@@ -319,6 +382,15 @@
     messages = next;
     if (changed) render();
     else syncLauncher();
+    if (pendingJump) {
+      const target = messages.find(({ key, element }) => key === pendingJump.key && element?.isConnected);
+      if (target) {
+        pendingJump = null;
+        jumpToMounted(target);
+      } else if (performance.now() > pendingJump.expires) {
+        pendingJump = null;
+      }
+    }
     queueScrollSync();
   }
 
@@ -328,6 +400,10 @@
 
   function setOpen(open, returnFocus = false) {
     panel.hidden = !open;
+    if (!open && scan) {
+      scan = null;
+      readAll.textContent = "读取完整对话";
+    }
     syncLauncher();
     launcher.setAttribute("aria-expanded", String(open));
     if (open) {
@@ -344,6 +420,11 @@
     search.value = "";
     list.parentElement.scrollTop = 0;
     activeKey = null;
+    indexedScope = null;
+    virtualMode = false;
+    transcriptScroller = null;
+    pendingJump = null;
+    scan = null;
     messages = [];
     render();
     queueRefresh();
@@ -383,7 +464,7 @@
     attributes: true,
     attributeFilter: [
       ...ROLE_ATTRIBUTES, "data-message-id", "data-rail-chat-transcript", "data-app-shell-active-page",
-      "data-app-shell-focus-area", "aria-hidden", "hidden", "inert",
+      "data-app-shell-focus-area", "data-virtualized-turn", "data-content-search-turn-key", "aria-hidden", "hidden", "inert",
     ],
   });
   const themeObserver = new MutationObserver(updateTheme);
@@ -391,6 +472,46 @@
   themeObserver.observe(document.documentElement, themeOptions);
   themeObserver.observe(document.body, themeOptions);
 
+  async function readTranscript() {
+    if (scan) {
+      scan = null;
+      readAll.textContent = "读取完整对话";
+      return;
+    }
+
+    const scope = indexedScope;
+    const scroller = transcriptScroller?.isConnected ? transcriptScroller : document.scrollingElement;
+    if (!scope || !scroller) return;
+    const currentScan = {};
+    scan = currentScan;
+    pendingJump = null;
+    readAll.textContent = "停止读取";
+    const originalTop = scroller.scrollTop;
+    const stillReading = () => scan === currentScan && indexedScope === scope && scroller.isConnected;
+
+    const step = Math.max(1, Math.floor(scroller.clientHeight * 0.7));
+    let lastTop = -1;
+    for (let top = 0; stillReading();) {
+      scroller.scrollTo({ top, behavior: "instant" });
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      if (!stillReading()) break;
+      if (refreshFrame) cancelAnimationFrame(refreshFrame);
+      refresh();
+      const currentTop = scroller.scrollTop;
+      const bottom = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+      if (currentTop >= bottom - 1 || currentTop <= lastTop) break;
+      lastTop = currentTop;
+      top = Math.min(bottom, currentTop + step);
+    }
+
+    if (stillReading()) scroller.scrollTo({ top: originalTop, behavior: "instant" });
+    if (scan === currentScan) {
+      scan = null;
+      readAll.textContent = "读取完整对话";
+    }
+  }
+
+  readAll.addEventListener("click", readTranscript);
   launcher.addEventListener("click", () => setOpen(true));
   closeButton.addEventListener("click", () => setOpen(false, true));
   search.addEventListener("input", () => {
