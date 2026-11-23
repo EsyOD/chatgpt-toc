@@ -388,7 +388,6 @@
     }
 
     const found = [];
-    const seen = new Set();
     const turnOrdinals = new Map();
     const scroller = markers.length && (virtual || virtualMode) ? scrollContainer(markers[0]) : null;
     const scrollTop = scroller?.scrollTop ?? window.scrollY;
@@ -398,19 +397,22 @@
       if (wrappers.has(element)) continue;
       const role = element.closest(CHATGPT_MESSAGE);
       const turn = element.closest(TURN_ID);
-      const turnId = turn?.getAttribute("data-turn-key") || turn?.getAttribute("data-content-search-turn-key");
       const ordinal = turn ? (turnOrdinals.get(turn) ?? 0) : 0;
       if (turn) turnOrdinals.set(turn, ordinal + 1);
       const messageId = element.getAttribute("data-message-id") ||
-        (wrappers.get(role) === 1 && role.getAttribute("data-message-id"));
-      const key = messageId ? `message:${messageId}` : turnId ? `turn:${turnId}:${ordinal}` : element;
-      if (seen.has(key)) continue;
-      seen.add(key);
+        (wrappers.get(role) === 1 ? role.getAttribute("data-message-id") : null);
+      const identities = [];
+      if (messageId) identities.push(`message:${messageId}`);
+      for (const attribute of ["data-turn-key", "data-content-search-turn-key"]) {
+        const id = turn?.getAttribute(attribute);
+        if (id) identities.push(`turn:${id}:${ordinal}`);
+      }
+      const key = identities[0] ?? element;
 
       const parts = questionParts(element);
       const label = parts.map(({ text }) => text).join("");
       const position = virtual || virtualMode ? scrollTop + element.getBoundingClientRect().top - scrollOrigin : 0;
-      found.push({ element, key, label, parts, searchable: searchText(label), position });
+      found.push({ element, key, messageId, identities, label, parts, searchable: searchText(label), position });
     }
     return { found, scope: messageScope, virtual, scroller };
   }
@@ -547,6 +549,33 @@
     updateActive(activeKey);
   }
 
+  function indexPrompt(index, message) {
+    if (message.element) index.set(message.element, message);
+    for (const identity of message.identities) {
+      const previous = index.get(identity);
+      if (!previous || previous.key === message.key) index.set(identity, message);
+    }
+  }
+
+  function findIndexedPrompt(index, message) {
+    for (const identity of [...message.identities, message.element]) {
+      const match = index.get(identity);
+      if (match && (!match.messageId || !message.messageId || match.messageId === message.messageId)) {
+        return match;
+      }
+    }
+    return null;
+  }
+
+  function mergePromptIdentity(message, previous, key = previous.key) {
+    return {
+      ...message,
+      key: typeof key === "string" ? key : message.key,
+      messageId: message.messageId || previous.messageId,
+      identities: [...new Set([...message.identities, ...previous.identities])],
+    };
+  }
+
   function refresh() {
     refreshFrame = 0;
     const { found, scope, virtual, scroller } = collectMessages();
@@ -555,20 +584,34 @@
     virtualMode = virtual || (sameScope && virtualMode);
     indexedScope = scope;
     transcriptScroller = scroller ?? (sameScope ? transcriptScroller : null);
-    let next = found;
+    const previousIndex = new Map();
+    const liveIndex = new Map();
+    const indexed = new Map();
+    if (sameScope) {
+      for (const message of messages) indexPrompt(previousIndex, message);
+    } else {
+      pendingJump = null;
+    }
+
+    for (const foundMessage of found) {
+      const previous = findIndexedPrompt(previousIndex, foundMessage);
+      let message = previous ? mergePromptIdentity(foundMessage, previous) : foundMessage;
+      const duplicate = findIndexedPrompt(liveIndex, message);
+      if (duplicate) message = mergePromptIdentity(duplicate, message, duplicate.key);
+      indexed.set(message.key, message);
+      indexPrompt(liveIndex, message);
+    }
 
     if (virtualMode && sameScope) {
-      const indexed = new Map(found.map((message) => [message.key, message]));
       for (const previous of messages) {
-        if (typeof previous.key === "string" && !indexed.has(previous.key) &&
-            !previous.element?.isConnected) {
+        if (typeof previous.key === "string" && !previous.element?.isConnected &&
+            !findIndexedPrompt(liveIndex, previous)) {
           indexed.set(previous.key, { ...previous, element: null });
         }
       }
-      next = Array.from(indexed.values()).sort((left, right) => left.position - right.position);
-    } else if (!sameScope) {
-      pendingJump = null;
     }
+    const next = Array.from(indexed.values());
+    if (virtualMode && sameScope) next.sort((left, right) => left.position - right.position);
 
     const changed = virtualMode !== wasVirtual || next.length !== messages.length || next.some((message, index) =>
       message.key !== messages[index].key || message.label !== messages[index].label ||
@@ -581,7 +624,8 @@
     if (changed) render();
     else syncLauncher();
     if (pendingJump) {
-      const target = messages.find(({ key, element }) => key === pendingJump.key && element?.isConnected);
+      const target = messages.find(({ key, identities, element }) => element?.isConnected &&
+        (key === pendingJump.key || identities.includes(pendingJump.key)));
       if (target) {
         pendingJump = null;
         jumpToMounted(target);

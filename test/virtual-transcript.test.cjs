@@ -58,3 +58,42 @@ test("Virtualized prompts stay indexed and can be reached after unmounting", () 
   await page.getByRole("button", { name: "New task" }).waitFor();
   assert.deepEqual(await labels.allTextContents(), ["New task"]);
 }));
+
+test("A prompt keeps one entry when its message ID arrives or its turn is rendered twice", () =>
+  withPage({ width: 1200, height: 900 }, async (page) => {
+    await openFixture(page, `
+      <main data-thread-user-message-navigation-content>
+        <article id="original" data-turn-key="first" data-virtualized-turn>
+          <div data-user-message-bubble>同样的问题</div>
+          <div data-user-message-bubble>同样的问题</div>
+        </article>
+      </main>`, "/codex/cloud/task/identities");
+    await loadContentScripts(page);
+    await page.getByRole("button", { name: "提问目录", exact: true }).click();
+    const rows = page.locator(".question-label");
+    assert.deepEqual(await rows.allTextContents(), ["同样的问题", "同样的问题"]);
+
+    await page.evaluate(() => {
+      const old = document.querySelector("#original");
+      const replacement = old.cloneNode(true);
+      replacement.id = "replacement";
+      Array.from(replacement.children).forEach((bubble, i) => { bubble.dataset.messageId = "sent-" + i; });
+      old.replaceWith(replacement);
+      document.querySelector("main").insertAdjacentHTML("beforeend", `
+        <article data-turn-key="second"><div data-user-message-bubble>后续问题</div></article>`);
+    });
+    await page.getByRole("button", { name: "后续问题", exact: true }).waitFor();
+    assert.deepEqual(await rows.allTextContents(), ["同样的问题", "同样的问题", "后续问题"]);
+
+    await page.evaluate(() => {
+      const clone = document.querySelector("#replacement").cloneNode(true);
+      clone.removeAttribute("id");
+      for (const bubble of clone.children) bubble.removeAttribute("data-message-id");
+      const marker = document.createElement("div");
+      marker.dataset.userMessageBubble = "";
+      marker.textContent = "再检查一次";
+      document.querySelector("main").append(clone, marker);
+    });
+    await page.getByRole("button", { name: "再检查一次", exact: true }).waitFor();
+    assert.deepEqual(await rows.allTextContents(), ["同样的问题", "同样的问题", "后续问题", "再检查一次"]);
+  }));
