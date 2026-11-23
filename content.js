@@ -8,10 +8,10 @@
   const CODEX_TRANSCRIPT = "[data-thread-user-message-navigation-content]";
   const CODEX_MESSAGE = "[data-user-message-bubble]";
   const MESSAGE_MARKERS = `${CHATGPT_MARKERS}, ${CODEX_MESSAGE}`;
-  const USER_MESSAGE = `${CHATGPT_MARKERS}, ${CODEX_TRANSCRIPT} ${CODEX_MESSAGE}`;
+  const CODEX_TURN = "[data-turn-transcript], [data-turn-key], [data-chatgpt-conversation-turn]";
   const INACTIVE = '[hidden], [inert], [aria-hidden="true"]';
   const RAIL = "[data-rail-chat-transcript]";
-  const ROLE_ATTRIBUTES = ["data-message-author-role", "data-turn", "data-user-message-bubble", "data-thread-user-message-navigation-content"];
+  const ROLE_ATTRIBUTES = ["data-message-author-role", "data-turn", "data-user-message-bubble", "data-thread-user-message-navigation-content", "data-turn-transcript", "data-turn-key", "data-chatgpt-conversation-turn"];
   const EXCLUDED_TEXT = 'button, [role="button"], [aria-hidden="true"], [hidden], .sr-only, [data-markdown-copy="exclude"], [contenteditable="true"], script, style, svg';
   if (document.getElementById(HOST_ID)) return;
 
@@ -79,9 +79,10 @@
   }
 
   function isVisible(element) {
-    return element.getClientRects().length > 0 &&
-      getComputedStyle(element).visibility === "visible" &&
-      !element.closest(INACTIVE);
+    if (element.closest(INACTIVE)) return false;
+    // Keep mounted messages in offscreen content-visibility:auto sections.
+    return element.checkVisibility?.({ checkVisibilityCSS: true, visibilityProperty: true }) ??
+      (element.getClientRects().length > 0 && getComputedStyle(element).visibility === "visible");
   }
 
   function searchText(text) {
@@ -126,24 +127,37 @@
   }
 
   function collectMessages() {
-    const found = [];
-    const seen = new Set();
     const main = Array.from(document.querySelectorAll('main, [role="main"]')).find((element) =>
       isVisible(element) && !element.closest(RAIL) && element.querySelector(MESSAGE_MARKERS));
     const transcripts = Array.from(document.querySelectorAll(CODEX_TRANSCRIPT)).filter((element) =>
       isVisible(element) && !element.closest(RAIL) && element.querySelector(MESSAGE_MARKERS));
     const transcript = transcripts.find((element) => main?.contains(element)) ??
-      (main?.querySelector(CHATGPT_MARKERS) ? main : transcripts[0]) ?? main ?? document;
-    const selector = transcript.matches?.(CODEX_TRANSCRIPT) ? USER_MESSAGE : CHATGPT_MARKERS;
+      (main?.querySelector(CHATGPT_MARKERS) ? null : transcripts[0]);
+    const scope = main && (!transcript || main.contains(transcript)) ? main : transcript ?? document;
 
-    for (const marker of transcript.querySelectorAll(selector)) {
-      if (!isVisible(marker) || marker.closest(RAIL) || marker.parentElement.closest(selector)) continue;
-      const roleMarker = marker.matches(CHATGPT_USER_TURN) ?
-        Array.from(marker.querySelectorAll(CHATGPT_MESSAGE)).find(isVisible) : null;
-      const element = roleMarker ?? marker;
-      const turn = marker.closest(turnSelector);
+    const candidates = new Set(Array.from(scope.querySelectorAll(MESSAGE_MARKERS)).filter((element) => {
+      if (element.closest(RAIL) || !isVisible(element)) return false;
+      const container = element.closest(CODEX_TRANSCRIPT);
+      if (container && container !== transcript) return false;
+      return element.matches(CHATGPT_MARKERS) || container ||
+        element.closest(`${CODEX_TURN}, ${CHATGPT_MARKERS}`);
+    }));
+    const wrappers = new Map();
+    for (const element of candidates) {
+      for (let parent = element.parentElement.closest(MESSAGE_MARKERS); parent;
+        parent = parent.parentElement?.closest(MESSAGE_MARKERS)) {
+        if (candidates.has(parent)) wrappers.set(parent, (wrappers.get(parent) ?? 0) + 1);
+      }
+    }
+
+    const found = [];
+    const seen = new Set();
+    for (const element of candidates) {
+      // A turn can contain more than one prompt, including follow-up instructions.
+      if (wrappers.has(element)) continue;
+      const role = element.closest(CHATGPT_MESSAGE);
       const key = element.getAttribute("data-message-id") ||
-        (marker.matches(CHATGPT_MARKERS) && (turn?.getAttribute("data-testid") || marker.id)) || element;
+        (wrappers.get(role) === 1 && role.getAttribute("data-message-id")) || element;
       if (seen.has(key)) continue;
       seen.add(key);
 
@@ -317,7 +331,7 @@
     if (updateLocation()) return;
     for (const record of records) {
       const target = record.target instanceof Element ? record.target : record.target.parentElement;
-      if (target?.closest(USER_MESSAGE) ||
+      if (target?.closest(MESSAGE_MARKERS) ||
           (record.type === "attributes" && (ROLE_ATTRIBUTES.includes(record.attributeName) || hasQuestion(target))) ||
           Array.from(record.addedNodes).some(hasQuestion) ||
           Array.from(record.removedNodes).some(hasQuestion)) {
