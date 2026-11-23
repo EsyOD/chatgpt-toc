@@ -40,6 +40,15 @@ const CHATGPT_QUESTION_TOC_STYLES = `
     bottom: auto;
   }
 
+  :host([data-position="free"]) {
+    --edge-x: 0px;
+    --edge-y: 0px;
+    inset: var(--free-top, 0px) auto auto var(--free-left, 0px);
+    width: max-content;
+  }
+
+  :host([data-position="free"]) .dock-offset { display: none; }
+
   :host([data-theme="dark"]) {
     color-scheme: dark;
     --surface: #242326;
@@ -77,6 +86,9 @@ const CHATGPT_QUESTION_TOC_STYLES = `
     font-weight: 650;
   }
 
+  .launcher, header { cursor: grab; touch-action: none; user-select: none; }
+  :host([data-adjusting]) :is(.launcher, header) { cursor: grabbing; }
+
   .launcher:hover { background: var(--hover); }
 
   .launcher-count {
@@ -90,6 +102,7 @@ const CHATGPT_QUESTION_TOC_STYLES = `
   }
 
   .panel {
+    position: relative;
     display: flex;
     flex-direction: column;
     width: min(var(--toc-width, 350px), calc(100vw - var(--edge-x) - 12px));
@@ -100,6 +113,50 @@ const CHATGPT_QUESTION_TOC_STYLES = `
     background: var(--surface);
     box-shadow: var(--shadow);
     animation: enter 150ms ease-out;
+  }
+
+  :host([data-fixed-height]) .panel { height: var(--toc-height, 520px); }
+
+  .resize-handle {
+    position: absolute;
+    inset: auto 1px 1px auto;
+    display: grid;
+    width: 22px;
+    height: 22px;
+    place-items: center;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    cursor: nwse-resize;
+    touch-action: none;
+  }
+
+  .resize-handle span {
+    width: 12px;
+    height: 12px;
+    background: repeating-linear-gradient(135deg, transparent 0 2px, currentColor 2px 3px);
+    clip-path: polygon(100% 10%, 100% 100%, 10% 100%);
+    rotate: var(--grip-angle, 0deg);
+  }
+
+  .resize-handle:hover { color: var(--accent); }
+  .resize-handle:focus-visible { outline-offset: -3px; }
+
+  :host([data-position="bottom-right"]) .resize-handle {
+    inset: 1px auto auto 1px;
+    --grip-angle: 180deg;
+  }
+
+  :host([data-position="top-right"]) .resize-handle {
+    inset: auto auto 1px 1px;
+    --grip-angle: 90deg;
+    cursor: nesw-resize;
+  }
+
+  :host([data-position="bottom-left"]) .resize-handle {
+    inset: 1px 1px auto auto;
+    --grip-angle: -90deg;
+    cursor: nesw-resize;
   }
 
   @keyframes enter {
@@ -344,6 +401,20 @@ const CHATGPT_QUESTION_TOC_STYLES = `
     color: var(--ink);
     outline-offset: 1px;
     font-size: inherit;
+  }
+
+  .settings .fixed-height {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .settings .fixed-height input {
+    width: 16px;
+    min-height: 0;
+    height: 16px;
+    margin: 0;
+    accent-color: var(--accent);
   }
 
   .reset-appearance {

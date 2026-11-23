@@ -39,7 +39,7 @@
   }
 
   const launcherCount = create("span", { className: "launcher-count", ariaHidden: "true" });
-  const launcher = create("button", { className: "launcher", type: "button", hidden: true },
+  const launcher = create("button", { className: "launcher", type: "button", hidden: true, title: "点击展开，拖动移动" },
     indexIcon(), create("span", null, "提问目录"), launcherCount);
   launcher.setAttribute("aria-expanded", "false");
   launcher.setAttribute("aria-controls", "question-panel");
@@ -53,7 +53,7 @@
   }, create("span", { ariaHidden: "true" }, "⚙︎"));
   settingsButton.setAttribute("aria-expanded", "false");
   settingsButton.setAttribute("aria-controls", "toc-appearance");
-  const header = create("header", null,
+  const header = create("header", { title: "拖动移动提问目录" },
     create("div", { className: "title-icon", ariaHidden: "true" }, indexIcon()),
     create("div", { className: "heading" }, create("h2", { id: "panel-title" }, "提问目录"), count),
     settingsButton, closeButton);
@@ -71,26 +71,34 @@
   for (const [value, text] of Object.entries(corners)) {
     position.append(create("option", { value }, text));
   }
+  position.append(create("option", { value: "free" }, "自由位置"));
+  const fixedHeight = create("input", { type: "checkbox" });
   const dimensions = {
     width: { label: "宽度（px）", min: 240, max: 760, initial: 350 },
     height: { label: "最大高度（px）", min: 220, max: 1100, initial: 520 },
     x: { label: "水平边距（px）", min: 0, max: 360 },
     y: { label: "垂直边距（px）", min: 0, max: 360 },
   };
-  const fields = new Map([["position", position]]);
+  const fields = new Map([["position", position], ["fixedHeight", fixedHeight]]);
   const sizeFields = create("div", { className: "settings-grid" });
   for (const [key, { label, min, max }] of Object.entries(dimensions)) {
     const input = create("input", { type: "number", min, max, step: 1, placeholder: "自动" });
     fields.set(key, input);
-    sizeFields.append(create("label", null, create("span", null, label), input));
+    sizeFields.append(create("label", { className: key === "x" || key === "y" ? "dock-offset" : "" },
+      create("span", null, label), input));
   }
   const resetAppearance = create("button", { className: "reset-appearance", type: "button" }, "恢复默认");
   const settings = create("div", { className: "settings", id: "toc-appearance", hidden: true },
-    create("label", null, create("span", null, "停靠位置"), position), sizeFields, resetAppearance);
+    create("label", null, create("span", null, "停靠位置"), position), sizeFields,
+    create("label", { className: "fixed-height" }, fixedHeight, create("span", null, "固定面板高度")),
+    resetAppearance);
+  const resizeHandle = create("button", {
+    className: "resize-handle", type: "button", ariaLabel: "调整面板大小", title: "拖动或按方向键调整大小",
+  }, create("span", { ariaHidden: "true" }));
   const panel = create("section", { className: "panel", id: "question-panel", hidden: true },
     header,
     create("label", { className: "search" }, create("span", { className: "search-icon", ariaHidden: "true" }), search),
-    create("div", { className: "results" }, list, empty), readAll, settings);
+    create("div", { className: "results" }, list, empty), readAll, settings, resizeHandle);
   panel.setAttribute("aria-labelledby", "panel-title");
   root.append(launcher, panel);
   document.documentElement.append(host);
@@ -118,12 +126,49 @@
     (open ? position : settingsButton).focus({ preventScroll: true });
   }
 
+  const appearancePrefix = "tocAppearance.";
+  const appearanceStorage = globalThis.chrome?.storage;
+  const updatedAppearance = new Set();
+  let freePosition = null;
+  let skipLauncherClick = false;
+
+  function fitFreePosition() {
+    if (!freePosition) return;
+    const left = Math.min(freePosition.left, Math.max(0, window.innerWidth - host.offsetWidth));
+    const top = Math.min(freePosition.top, Math.max(0, window.innerHeight - host.offsetHeight));
+    host.style.setProperty("--free-left", `${left}px`);
+    host.style.setProperty("--free-top", `${top}px`);
+  }
+
+  function rectanglePosition() {
+    const { left, top } = host.getBoundingClientRect();
+    return { left, top };
+  }
+
+  function saveAppearance(changes) {
+    const values = {};
+    for (const [key, value] of Object.entries(changes)) {
+      updatedAppearance.add(key);
+      values[appearancePrefix + key] = value;
+    }
+    appearanceStorage?.local.set(values).catch(console.warn);
+  }
+
   function applyAppearance(key, value) {
     if (key === "position") {
-      const corner = Object.hasOwn(corners, value) ? value : "bottom-right";
-      host.dataset.position = corner;
-      position.value = corner;
-      return corner;
+      freePosition = Number.isFinite(value?.left) && Number.isFinite(value?.top) ?
+        { left: Math.max(0, Math.round(value.left)), top: Math.max(0, Math.round(value.top)) } : null;
+      const corner = typeof value === "string" && Object.hasOwn(corners, value) ? value : "bottom-right";
+      const mode = freePosition ? "free" : corner;
+      host.dataset.position = mode;
+      position.value = mode;
+      fitFreePosition();
+      return freePosition ?? corner;
+    }
+    if (key === "fixedHeight") {
+      fixedHeight.checked = value === true;
+      host.toggleAttribute("data-fixed-height", fixedHeight.checked);
+      return fixedHeight.checked;
     }
 
     const { min, max, initial } = dimensions[key];
@@ -135,41 +180,105 @@
   }
 
   function initializeAppearance() {
-    const storage = globalThis.chrome?.storage;
-    const prefix = "tocAppearance.";
-    const storageKeys = Array.from(fields.keys(), (key) => prefix + key);
-    const updated = new Set();
+    const storageKeys = Array.from(fields.keys(), (key) => appearancePrefix + key);
     for (const [key, control] of fields) {
       applyAppearance(key);
       control.addEventListener("change", () => {
-        updated.add(key);
-        const value = key === "position" ? control.value : control.valueAsNumber;
-        const setting = applyAppearance(key, value);
-        storage?.local.set({ [prefix + key]: setting }).catch(console.warn);
+        let value = control.valueAsNumber;
+        if (key === "position") value = position.value === "free" ? rectanglePosition() : position.value;
+        if (key === "fixedHeight") value = fixedHeight.checked;
+        saveAppearance({ [key]: applyAppearance(key, value) });
       });
     }
 
     resetAppearance.addEventListener("click", () => {
       for (const key of fields.keys()) {
-        updated.add(key);
+        updatedAppearance.add(key);
         applyAppearance(key);
       }
-      storage?.local.remove(storageKeys).catch(console.warn);
+      appearanceStorage?.local.remove(storageKeys).catch(console.warn);
     });
 
-    storage?.onChanged.addListener((changes, area) => {
+    appearanceStorage?.onChanged.addListener((changes, area) => {
       if (area !== "local") return;
       for (const key of fields.keys()) {
-        if (!Object.hasOwn(changes, prefix + key)) continue;
-        updated.add(key);
-        applyAppearance(key, changes[prefix + key].newValue);
+        if (!Object.hasOwn(changes, appearancePrefix + key)) continue;
+        updatedAppearance.add(key);
+        applyAppearance(key, changes[appearancePrefix + key].newValue);
       }
     });
-    storage?.local.get(storageKeys).then((saved) => {
+    appearanceStorage?.local.get(storageKeys).then((saved) => {
       for (const key of fields.keys()) {
-        if (!updated.has(key)) applyAppearance(key, saved[prefix + key]);
+        if (!updatedAppearance.has(key)) applyAppearance(key, saved[appearancePrefix + key]);
       }
     }).catch(console.warn);
+    new ResizeObserver(fitFreePosition).observe(host);
+  }
+
+  function trackPointer(control, start) {
+    let interaction;
+    control.addEventListener("pointerdown", (event) => {
+      if (interaction || event.button !== 0 || !event.isPrimary) return;
+      const gesture = start(event);
+      if (!gesture) return;
+      interaction = { gesture, id: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
+      control.setPointerCapture(event.pointerId);
+    });
+    control.addEventListener("pointermove", (event) => {
+      if (interaction?.id !== event.pointerId) return;
+      const x = event.clientX - interaction.x;
+      const y = event.clientY - interaction.y;
+      if (!interaction.moved && Math.hypot(x, y) < 4) return;
+      interaction.moved = true;
+      host.toggleAttribute("data-adjusting", true);
+      interaction.gesture.move(x, y);
+    });
+    for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
+      control.addEventListener(type, (event) => {
+        if (interaction?.id !== event.pointerId) return;
+        const { gesture, moved } = interaction;
+        interaction = null;
+        host.removeAttribute("data-adjusting");
+        if (moved) gesture.finish();
+      });
+    }
+  }
+
+  function moveGesture() {
+    const { left, top } = rectanglePosition();
+    return {
+      move(x, y) {
+        applyAppearance("position", {
+          left: Math.min(left + x, window.innerWidth - host.offsetWidth),
+          top: Math.min(top + y, window.innerHeight - host.offsetHeight),
+        });
+      },
+      finish() {
+        saveAppearance({ position: freePosition });
+      },
+    };
+  }
+
+  function resizeGesture() {
+    const { left, top, width, height } = host.getBoundingClientRect();
+    const anchor = host.dataset.position;
+    const across = anchor.endsWith("right") ? -1 : 1;
+    const down = anchor.startsWith("bottom") ? -1 : 1;
+    let values;
+    return {
+      move(x, y) {
+        const maxWidth = freePosition ? window.innerWidth - left : Infinity;
+        const maxHeight = freePosition ? window.innerHeight - top : Infinity;
+        values = {
+          width: applyAppearance("width", Math.min(maxWidth, width + x * across)),
+          height: applyAppearance("height", Math.min(maxHeight, height + y * down)),
+          fixedHeight: applyAppearance("fixedHeight", true),
+        };
+      },
+      finish() {
+        saveAppearance(values);
+      },
+    };
   }
 
   function updateTheme() {
@@ -602,7 +711,31 @@
   }
 
   readAll.addEventListener("click", readTranscript);
-  launcher.addEventListener("click", () => setOpen(true));
+  trackPointer(launcher, () => {
+    skipLauncherClick = false;
+    const gesture = moveGesture();
+    return { move: gesture.move, finish: () => {
+      skipLauncherClick = true;
+      gesture.finish();
+    } };
+  });
+  trackPointer(header, (event) => event.target.closest("button") ? null : moveGesture());
+  trackPointer(resizeHandle, resizeGesture);
+  resizeHandle.addEventListener("keydown", (event) => {
+    const directions = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+    if (!Object.hasOwn(directions, event.key)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const step = event.shiftKey ? 32 : 8;
+    const [x, y] = directions[event.key];
+    const gesture = resizeGesture();
+    gesture.move(x * step, y * step);
+    gesture.finish();
+  });
+  launcher.addEventListener("click", (event) => {
+    if (!skipLauncherClick || event.detail === 0) setOpen(true);
+    skipLauncherClick = false;
+  });
   closeButton.addEventListener("click", () => setOpen(false, true));
   settingsButton.addEventListener("click", () => setSettings(settings.hidden));
   search.addEventListener("input", () => {
@@ -621,6 +754,7 @@
   window.navigation?.addEventListener("currententrychange", updateLocation);
   window.addEventListener("scroll", queueScrollSync, { capture: true, passive: true });
   window.addEventListener("resize", () => {
+    fitFreePosition();
     queueRefresh();
     queueScrollSync();
   }, { passive: true });
