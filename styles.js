@@ -2,7 +2,13 @@ const CHATGPT_QUESTION_TOC_STYLES = `
   :host {
     all: initial;
     position: fixed;
-    inset: auto 24px 24px auto;
+    --default-x: 24px;
+    --default-y: 24px;
+    --dock-x: min(var(--toc-x, var(--default-x)), max(0px, calc(100vw - 240px)));
+    --dock-y: min(var(--toc-y, var(--default-y)), max(0px, calc(100dvh - 230px)));
+    --edge-x: max(var(--dock-x), env(safe-area-inset-right));
+    --edge-y: max(var(--dock-y), env(safe-area-inset-bottom));
+    inset: auto var(--edge-x) var(--edge-y) auto;
     z-index: 2147483000;
     display: block;
     isolation: isolate;
@@ -21,6 +27,19 @@ const CHATGPT_QUESTION_TOC_STYLES = `
     --shadow: 0 16px 56px #2d1d4124, 0 3px 10px #2d1d410d;
   }
 
+  :host([data-position$="left"]) {
+    --edge-x: max(var(--dock-x), env(safe-area-inset-left));
+    right: auto;
+    left: var(--edge-x);
+  }
+
+  :host([data-position^="top"]) {
+    --default-y: 24px;
+    --edge-y: max(var(--dock-y), env(safe-area-inset-top));
+    top: var(--edge-y);
+    bottom: auto;
+  }
+
   :host([data-theme="dark"]) {
     color-scheme: dark;
     --surface: #242326;
@@ -37,9 +56,9 @@ const CHATGPT_QUESTION_TOC_STYLES = `
 
   *, *::before, *::after { box-sizing: border-box; }
   [hidden] { display: none !important; }
-  button, input { color: inherit; font: inherit; }
+  button, input, select { color: inherit; font: inherit; }
   button { cursor: pointer; }
-  button:focus-visible, .search:focus-within {
+  button:focus-visible, .settings :is(input, select):focus-visible, .search:focus-within {
     outline: 2px solid var(--accent);
     outline-offset: 3px;
   }
@@ -73,8 +92,8 @@ const CHATGPT_QUESTION_TOC_STYLES = `
   .panel {
     display: flex;
     flex-direction: column;
-    width: min(350px, calc(100vw - 48px));
-    max-height: min(520px, calc(100dvh - 56px));
+    width: min(var(--toc-width, 350px), calc(100vw - var(--edge-x) - 12px));
+    max-height: min(var(--toc-height, var(--default-height, 520px)), calc(100dvh - var(--edge-y) - 12px));
     overflow: hidden;
     border: 1px solid var(--line);
     border-radius: 21px;
@@ -94,10 +113,10 @@ const CHATGPT_QUESTION_TOC_STYLES = `
 
   header {
     display: grid;
-    grid-template-columns: 40px minmax(0, 1fr) 36px;
+    grid-template-columns: 40px minmax(0, 1fr) repeat(2, 32px);
     align-items: center;
     flex-shrink: 0;
-    gap: 11px;
+    gap: 8px;
     padding: 18px 16px 14px;
   }
 
@@ -142,9 +161,9 @@ const CHATGPT_QUESTION_TOC_STYLES = `
     font-variant-numeric: tabular-nums;
   }
 
-  .close {
+  .close, .settings-button {
     display: grid;
-    width: 36px;
+    width: 32px;
     height: 36px;
     place-items: center;
     border: 0;
@@ -153,7 +172,12 @@ const CHATGPT_QUESTION_TOC_STYLES = `
     color: var(--muted);
   }
 
-  .close:hover { background: var(--hover); color: var(--accent); }
+  .close:hover, .settings-button:hover, .settings-button[aria-expanded="true"] {
+    background: var(--hover);
+    color: var(--accent);
+  }
+
+  .settings-button { font-size: 19px; line-height: 1; }
   .close span { position: relative; width: 14px; height: 14px; }
 
   .close span::before, .close span::after {
@@ -288,6 +312,51 @@ const CHATGPT_QUESTION_TOC_STYLES = `
 
   .question[aria-current="location"] code { background: var(--surface); }
 
+  .show-settings > :is(.search, .results, .read-all) { display: none; }
+
+  .settings {
+    display: grid;
+    gap: 12px;
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+    padding: 12px 16px 16px;
+    border-top: 1px solid var(--line);
+    font-size: 13px;
+  }
+
+  .settings-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 12px;
+  }
+
+  .settings label { display: grid; gap: 4px; color: var(--muted); }
+
+  .settings :is(input, select) {
+    display: block;
+    width: 100%;
+    min-height: 36px;
+    padding: 4px 8px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--field);
+    color: var(--ink);
+    outline-offset: 1px;
+    font-size: inherit;
+  }
+
+  .reset-appearance {
+    justify-self: start;
+    border: 0;
+    border-radius: 8px;
+    background: var(--field);
+    color: var(--accent);
+    padding: 6px 10px;
+  }
+
+  .reset-appearance:hover { background: var(--hover); }
+
   .read-all {
     align-self: flex-start;
     margin: 8px 12px 11px;
@@ -313,8 +382,7 @@ const CHATGPT_QUESTION_TOC_STYLES = `
   }
 
   @media (max-width: 600px) {
-    :host { inset: auto max(12px, env(safe-area-inset-right)) calc(82px + env(safe-area-inset-bottom)) auto; }
-    .panel { width: min(350px, calc(100vw - 24px)); max-height: min(520px, 70dvh, calc(100dvh - 116px)); }
-    input { font-size: 16px; }
+    :host { --default-x: 12px; --default-y: 82px; --default-height: min(520px, 70dvh); }
+    input, .settings :is(input, select) { font-size: 16px; }
   }
 `;

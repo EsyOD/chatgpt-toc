@@ -48,10 +48,15 @@
   const closeButton = create("button", {
     className: "close", type: "button", ariaLabel: "收起目录", title: "收起目录",
   }, create("span", { ariaHidden: "true" }));
+  const settingsButton = create("button", {
+    className: "settings-button", type: "button", ariaLabel: "外观设置", title: "外观设置",
+  }, create("span", { ariaHidden: "true" }, "⚙︎"));
+  settingsButton.setAttribute("aria-expanded", "false");
+  settingsButton.setAttribute("aria-controls", "toc-appearance");
   const header = create("header", null,
     create("div", { className: "title-icon", ariaHidden: "true" }, indexIcon()),
     create("div", { className: "heading" }, create("h2", { id: "panel-title" }, "提问目录"), count),
-    closeButton);
+    settingsButton, closeButton);
   const search = create("input", {
     type: "search", ariaLabel: "搜索提问", placeholder: "搜索提问…", autocomplete: "off", spellcheck: false,
   });
@@ -59,10 +64,33 @@
   const empty = create("p", { className: "empty", hidden: true });
   empty.setAttribute("role", "status");
   const readAll = create("button", { className: "read-all", type: "button", hidden: true }, "读取完整对话");
+  const corners = {
+    "bottom-right": "右下", "top-right": "右上", "bottom-left": "左下", "top-left": "左上",
+  };
+  const position = create("select");
+  for (const [value, text] of Object.entries(corners)) {
+    position.append(create("option", { value }, text));
+  }
+  const dimensions = {
+    width: { label: "宽度（px）", min: 240, max: 760, initial: 350 },
+    height: { label: "最大高度（px）", min: 220, max: 1100, initial: 520 },
+    x: { label: "水平边距（px）", min: 0, max: 360 },
+    y: { label: "垂直边距（px）", min: 0, max: 360 },
+  };
+  const fields = new Map([["position", position]]);
+  const sizeFields = create("div", { className: "settings-grid" });
+  for (const [key, { label, min, max }] of Object.entries(dimensions)) {
+    const input = create("input", { type: "number", min, max, step: 1, placeholder: "自动" });
+    fields.set(key, input);
+    sizeFields.append(create("label", null, create("span", null, label), input));
+  }
+  const resetAppearance = create("button", { className: "reset-appearance", type: "button" }, "恢复默认");
+  const settings = create("div", { className: "settings", id: "toc-appearance", hidden: true },
+    create("label", null, create("span", null, "停靠位置"), position), sizeFields, resetAppearance);
   const panel = create("section", { className: "panel", id: "question-panel", hidden: true },
     header,
     create("label", { className: "search" }, create("span", { className: "search-icon", ariaHidden: "true" }), search),
-    create("div", { className: "results" }, list, empty), readAll);
+    create("div", { className: "results" }, list, empty), readAll, settings);
   panel.setAttribute("aria-labelledby", "panel-title");
   root.append(launcher, panel);
   document.documentElement.append(host);
@@ -82,6 +110,67 @@
   let currentUrl = location.href;
   let refreshFrame = 0;
   let scrollFrame = 0;
+
+  function setSettings(open) {
+    settings.hidden = !open;
+    panel.classList.toggle("show-settings", open);
+    settingsButton.setAttribute("aria-expanded", String(open));
+    (open ? position : settingsButton).focus({ preventScroll: true });
+  }
+
+  function applyAppearance(key, value) {
+    if (key === "position") {
+      const corner = Object.hasOwn(corners, value) ? value : "bottom-right";
+      host.dataset.position = corner;
+      position.value = corner;
+      return corner;
+    }
+
+    const { min, max, initial } = dimensions[key];
+    const pixels = Number.isFinite(value) ? Math.min(max, Math.max(min, Math.round(value))) : null;
+    if (pixels === null) host.style.removeProperty(`--toc-${key}`);
+    else host.style.setProperty(`--toc-${key}`, `${pixels}px`);
+    fields.get(key).value = String(pixels ?? initial ?? "");
+    return pixels;
+  }
+
+  function initializeAppearance() {
+    const storage = globalThis.chrome?.storage;
+    const prefix = "tocAppearance.";
+    const storageKeys = Array.from(fields.keys(), (key) => prefix + key);
+    const updated = new Set();
+    for (const [key, control] of fields) {
+      applyAppearance(key);
+      control.addEventListener("change", () => {
+        updated.add(key);
+        const value = key === "position" ? control.value : control.valueAsNumber;
+        const setting = applyAppearance(key, value);
+        storage?.local.set({ [prefix + key]: setting }).catch(console.warn);
+      });
+    }
+
+    resetAppearance.addEventListener("click", () => {
+      for (const key of fields.keys()) {
+        updated.add(key);
+        applyAppearance(key);
+      }
+      storage?.local.remove(storageKeys).catch(console.warn);
+    });
+
+    storage?.onChanged.addListener((changes, area) => {
+      if (area !== "local") return;
+      for (const key of fields.keys()) {
+        if (!Object.hasOwn(changes, prefix + key)) continue;
+        updated.add(key);
+        applyAppearance(key, changes[prefix + key].newValue);
+      }
+    });
+    storage?.local.get(storageKeys).then((saved) => {
+      for (const key of fields.keys()) {
+        if (!updated.has(key)) applyAppearance(key, saved[prefix + key]);
+      }
+    }).catch(console.warn);
+  }
 
   function updateTheme() {
     const page = document.documentElement;
@@ -399,6 +488,7 @@
   }
 
   function setOpen(open, returnFocus = false) {
+    if (!open && !settings.hidden) setSettings(false);
     panel.hidden = !open;
     if (!open && scan) {
       scan = null;
@@ -514,6 +604,7 @@
   readAll.addEventListener("click", readTranscript);
   launcher.addEventListener("click", () => setOpen(true));
   closeButton.addEventListener("click", () => setOpen(false, true));
+  settingsButton.addEventListener("click", () => setSettings(settings.hidden));
   search.addEventListener("input", () => {
     list.parentElement.scrollTop = 0;
     render();
@@ -522,7 +613,8 @@
     if (event.key === "Escape" && !panel.hidden) {
       event.preventDefault();
       event.stopPropagation();
-      setOpen(false, true);
+      if (!settings.hidden) setSettings(false);
+      else setOpen(false, true);
     }
   });
   window.addEventListener("popstate", updateLocation);
@@ -534,6 +626,7 @@
   }, { passive: true });
   systemTheme.addEventListener("change", updateTheme);
 
+  initializeAppearance();
   updateTheme();
   render();
   refresh();
