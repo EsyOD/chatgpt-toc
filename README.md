@@ -7,7 +7,7 @@ Chrome 扩展，在 ChatGPT 和 Codex 网页对话右下角添加一个提问目
 1. 解压 ZIP，确认解压后的 `chatgpt-toc` 文件夹直接包含 `manifest.json`。
 2. 在 Chrome 打开 `chrome://extensions`，开启右上角的「开发者模式」。
 3. 点击「加载已解压的扩展程序」，选择 `chatgpt-toc` 文件夹。
-4. 打开或刷新 ChatGPT 或 Codex 网页对话。页面加载出提问后，点击右下角的「提问目录」。
+4. 打开或刷新 ChatGPT 或 Codex 网页对话。点击右下角的「提问目录」。提问加载后会自动加入目录。
 
 从旧版升级时，替换原扩展目录里的文件，在 `chrome://extensions` 重新加载扩展，再刷新对话。
 

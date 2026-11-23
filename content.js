@@ -10,6 +10,8 @@
   const MESSAGE_MARKERS = `${CHATGPT_MARKERS}, ${CODEX_MESSAGE}`;
   const CODEX_TURN = "[data-turn-transcript], [data-turn-key], [data-chatgpt-conversation-turn]";
   const INACTIVE = '[hidden], [inert], [aria-hidden="true"]';
+  const CONVERSATION_PATH = /(?:^|\/)(?:c|share|codex|work)(?:\/|$)/;
+  const CONVERSATION_UI = '#prompt-textarea, #mobile-composer-prompt, ' + CODEX_TRANSCRIPT;
   const RAIL = "[data-rail-chat-transcript]";
   const ROLE_ATTRIBUTES = ["data-message-author-role", "data-turn", "data-user-message-bubble", "data-thread-user-message-navigation-content", "data-turn-transcript", "data-turn-key", "data-chatgpt-conversation-turn"];
   const EXCLUDED_TEXT = 'button, [role="button"], [aria-hidden="true"], [hidden], .sr-only, [data-markdown-copy="exclude"], [contenteditable="true"], script, style, svg';
@@ -21,44 +23,45 @@
   const sheet = new CSSStyleSheet();
   sheet.replaceSync(CHATGPT_QUESTION_TOC_STYLES);
   root.adoptedStyleSheets = [sheet];
-  root.innerHTML = `
-    <button class="launcher" type="button" aria-expanded="false" aria-controls="question-panel">
-      <span class="index-icon" aria-hidden="true"><i></i><i></i><i></i></span>
-      <span>提问目录</span>
-      <span class="launcher-count" aria-hidden="true"></span>
-    </button>
-    <section class="panel" id="question-panel" aria-labelledby="panel-title" hidden>
-      <header>
-        <div class="title-icon" aria-hidden="true">
-          <span class="index-icon"><i></i><i></i><i></i></span>
-        </div>
-        <div class="heading">
-          <h2 id="panel-title">提问目录</h2>
-          <p class="count"></p>
-        </div>
-        <button class="close" type="button" aria-label="收起目录" title="收起目录">
-          <span aria-hidden="true"></span>
-        </button>
-      </header>
-      <label class="search">
-        <span class="search-icon" aria-hidden="true"></span>
-        <input type="search" aria-label="搜索提问" placeholder="搜索提问…" autocomplete="off" spellcheck="false">
-      </label>
-      <div class="results">
-        <ol class="questions" aria-label="本对话的提问"></ol>
-        <p class="empty" role="status" hidden></p>
-      </div>
-    </section>`;
+  function create(tag, properties, ...children) {
+    const element = Object.assign(document.createElement(tag), properties);
+    element.append(...children);
+    return element;
+  }
+
+  function indexIcon() {
+    return create("span", { className: "index-icon", ariaHidden: "true" },
+      create("i"), create("i"), create("i"));
+  }
+
+  const launcherCount = create("span", { className: "launcher-count", ariaHidden: "true" });
+  const launcher = create("button", { className: "launcher", type: "button", hidden: true },
+    indexIcon(), create("span", null, "提问目录"), launcherCount);
+  launcher.setAttribute("aria-expanded", "false");
+  launcher.setAttribute("aria-controls", "question-panel");
+
+  const count = create("p", { className: "count" });
+  const closeButton = create("button", {
+    className: "close", type: "button", ariaLabel: "收起目录", title: "收起目录",
+  }, create("span", { ariaHidden: "true" }));
+  const header = create("header", null,
+    create("div", { className: "title-icon", ariaHidden: "true" }, indexIcon()),
+    create("div", { className: "heading" }, create("h2", { id: "panel-title" }, "提问目录"), count),
+    closeButton);
+  const search = create("input", {
+    type: "search", ariaLabel: "搜索提问", placeholder: "搜索提问…", autocomplete: "off", spellcheck: false,
+  });
+  const list = create("ol", { className: "questions", ariaLabel: "本对话的提问" });
+  const empty = create("p", { className: "empty", hidden: true });
+  empty.setAttribute("role", "status");
+  const panel = create("section", { className: "panel", id: "question-panel", hidden: true },
+    header,
+    create("label", { className: "search" }, create("span", { className: "search-icon", ariaHidden: "true" }), search),
+    create("div", { className: "results" }, list, empty));
+  panel.setAttribute("aria-labelledby", "panel-title");
+  root.append(launcher, panel);
   document.documentElement.append(host);
 
-  const launcher = root.querySelector(".launcher");
-  const launcherCount = root.querySelector(".launcher-count");
-  const panel = root.querySelector(".panel");
-  const closeButton = root.querySelector(".close");
-  const count = root.querySelector(".count");
-  const search = root.querySelector("input");
-  const list = root.querySelector("ol");
-  const empty = root.querySelector(".empty");
   const rows = new Map();
   const systemTheme = matchMedia("(prefers-color-scheme: dark)");
   const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
@@ -83,6 +86,12 @@
     // Keep mounted messages in offscreen content-visibility:auto sections.
     return element.checkVisibility?.({ checkVisibilityCSS: true, visibilityProperty: true }) ??
       (element.getClientRects().length > 0 && getComputedStyle(element).visibility === "visible");
+  }
+
+  function syncLauncher() {
+    const onConversationPage = CONVERSATION_PATH.test(location.pathname) ||
+      Boolean(document.querySelector(CONVERSATION_UI));
+    launcher.hidden = !panel.hidden || (!messages.length && !onConversationPage);
   }
 
   function searchText(text) {
@@ -140,7 +149,8 @@
       const container = element.closest(CODEX_TRANSCRIPT);
       if (container && container !== transcript) return false;
       return element.matches(CHATGPT_MARKERS) || container ||
-        element.closest(`${CODEX_TURN}, ${CHATGPT_MARKERS}`);
+        element.closest(`${CODEX_TURN}, ${CHATGPT_MARKERS}`) ||
+        (main?.contains(element) && CONVERSATION_PATH.test(location.pathname));
     }));
     const wrappers = new Map();
     for (const element of candidates) {
@@ -174,6 +184,10 @@
     rows.get(key)?.setAttribute("aria-current", "location");
   }
 
+  function readingOffset(height) {
+    return Math.min(88, height * 0.16);
+  }
+
   function syncScroll() {
     scrollFrame = 0;
     if (panel.hidden || !messages.length) return;
@@ -186,7 +200,7 @@
     const scrollArea = scroller ?? document.scrollingElement;
     const atEnd = scrollArea && scrollArea.scrollTop > 0 &&
       scrollArea.scrollHeight - scrollArea.clientHeight - scrollArea.scrollTop <= 2;
-    const readingLine = atEnd ? bottom - 1 : top + Math.min(180, (bottom - top) * 0.25);
+    const readingLine = atEnd ? bottom - 1 : top + readingOffset(bottom - top) + 2;
     let key = null;
     for (const message of messages) {
       if (!message.element.isConnected) continue;
@@ -221,7 +235,7 @@
     const scroller = scrollContainer(element);
     const bounds = scroller?.getBoundingClientRect();
     const top = bounds?.top ?? 0;
-    const padding = Math.min(88, (scroller?.clientHeight ?? innerHeight) * 0.16);
+    const padding = readingOffset(scroller?.clientHeight ?? innerHeight);
     const offset = element.getBoundingClientRect().top - top - padding;
     (scroller ?? window).scrollBy({ top: offset, behavior });
     updateActive(key);
@@ -270,12 +284,12 @@
     list.parentElement.scrollTop = previousScroll;
     if (focusedKey !== null) rows.get(focusedKey)?.focus({ preventScroll: true });
 
-    launcher.hidden = !panel.hidden || !messages.length;
+    syncLauncher();
     launcherCount.hidden = !messages.length;
     launcherCount.textContent = String(messages.length);
     count.textContent = query ? `${rows.size} / ${messages.length} 条提问` : `本对话共 ${messages.length} 条提问`;
     empty.hidden = rows.size > 0;
-    empty.textContent = empty.hidden ? "" : query ? "没有匹配的提问" : "这段对话还没有提问";
+    empty.textContent = empty.hidden ? "" : query ? "没有匹配的提问" : "暂未识别到提问";
     updateActive(activeKey);
   }
 
@@ -291,6 +305,7 @@
       }));
     messages = next;
     if (changed) render();
+    else syncLauncher();
     queueScrollSync();
   }
 
@@ -300,7 +315,7 @@
 
   function setOpen(open, returnFocus = false) {
     panel.hidden = !open;
-    launcher.hidden = open || !messages.length;
+    syncLauncher();
     launcher.setAttribute("aria-expanded", String(open));
     if (open) {
       queueRefresh();
@@ -327,6 +342,11 @@
       (node.matches(MESSAGE_MARKERS) || Boolean(node.querySelector(MESSAGE_MARKERS)));
   }
 
+  function hasConversationUI(node) {
+    return node instanceof Element &&
+      (node.matches(CONVERSATION_UI) || Boolean(node.querySelector(CONVERSATION_UI)));
+  }
+
   const observer = new MutationObserver((records) => {
     if (updateLocation()) return;
     for (const record of records) {
@@ -334,7 +354,10 @@
       if (target?.closest(MESSAGE_MARKERS) ||
           (record.type === "attributes" && (ROLE_ATTRIBUTES.includes(record.attributeName) || hasQuestion(target))) ||
           Array.from(record.addedNodes).some(hasQuestion) ||
-          Array.from(record.removedNodes).some(hasQuestion)) {
+          Array.from(record.removedNodes).some(hasQuestion) ||
+          (!messages.length && !CONVERSATION_PATH.test(location.pathname) &&
+            (Array.from(record.addedNodes).some(hasConversationUI) ||
+             Array.from(record.removedNodes).some(hasConversationUI)))) {
         queueRefresh();
         return;
       }
