@@ -3,11 +3,16 @@
 
   const HOST_ID = "chatgpt-question-toc-extension";
   const CHATGPT_MESSAGE = '[data-message-author-role="user"]';
+  const CHATGPT_USER_TURN = '[data-turn="user"]';
+  const CHATGPT_MARKERS = `${CHATGPT_MESSAGE}, ${CHATGPT_USER_TURN}`;
   const CODEX_TRANSCRIPT = "[data-thread-user-message-navigation-content]";
   const CODEX_MESSAGE = "[data-user-message-bubble]";
-  const MESSAGE_MARKERS = `${CHATGPT_MESSAGE}, ${CODEX_MESSAGE}`;
-  const USER_MESSAGE = `${CHATGPT_MESSAGE}, ${CODEX_TRANSCRIPT} ${CODEX_MESSAGE}`;
-  const EXCLUDED_TEXT = 'button, [role="button"], [aria-hidden="true"], [hidden], .sr-only, [data-markdown-copy="exclude"], script, style, svg';
+  const MESSAGE_MARKERS = `${CHATGPT_MARKERS}, ${CODEX_MESSAGE}`;
+  const USER_MESSAGE = `${CHATGPT_MARKERS}, ${CODEX_TRANSCRIPT} ${CODEX_MESSAGE}`;
+  const INACTIVE = '[hidden], [inert], [aria-hidden="true"]';
+  const RAIL = "[data-rail-chat-transcript]";
+  const ROLE_ATTRIBUTES = ["data-message-author-role", "data-turn", "data-user-message-bubble", "data-thread-user-message-navigation-content"];
+  const EXCLUDED_TEXT = 'button, [role="button"], [aria-hidden="true"], [hidden], .sr-only, [data-markdown-copy="exclude"], [contenteditable="true"], script, style, svg';
   if (document.getElementById(HOST_ID)) return;
 
   const host = document.createElement("div");
@@ -67,67 +72,92 @@
 
   function updateTheme() {
     const page = document.documentElement;
-    const theme = page.getAttribute("data-theme");
-    const dark = page.classList.contains("dark") || theme === "dark";
-    const light = page.classList.contains("light") || theme === "light";
+    const theme = page.dataset.theme || document.body.dataset.theme;
+    const dark = theme === "dark" || (theme !== "light" && page.classList.contains("dark"));
+    const light = theme === "light" || page.classList.contains("light");
     host.dataset.theme = dark || (!light && systemTheme.matches) ? "dark" : "light";
   }
 
   function isVisible(element) {
     return element.getClientRects().length > 0 &&
       getComputedStyle(element).visibility === "visible" &&
-      !element.closest('[hidden], [inert], [aria-hidden="true"]');
+      !element.closest(INACTIVE);
   }
 
-  function questionLabel(element) {
-    const textBlocks = element.querySelectorAll(".whitespace-pre-wrap");
-    const sources = textBlocks.length ? Array.from(textBlocks) : [element];
-    const label = sources.map((source) => {
-      const copy = source.cloneNode(true);
-      copy.querySelectorAll(EXCLUDED_TEXT).forEach((child) => child.remove());
-      copy.querySelectorAll("br").forEach((lineBreak) => lineBreak.replaceWith(" "));
-      copy.querySelectorAll("div, p, li, pre, blockquote").forEach((block) => block.append(" "));
-      return copy.textContent.replace(/\s+/gu, " ").trim();
-    }).filter(Boolean).join(" ");
-    if (label) return label;
+  function searchText(text) {
+    return text.normalize("NFKC").toLowerCase().replace(/\s+/gu, " ").trim();
+  }
+
+  function questionParts(element) {
+    const bubble = element.querySelector(CODEX_MESSAGE) ?? element;
+    const copy = bubble.cloneNode(true);
+    copy.querySelectorAll(EXCLUDED_TEXT).forEach((child) => child.remove());
+    copy.querySelectorAll("br").forEach((lineBreak) => lineBreak.replaceWith(" "));
+    copy.querySelectorAll("div, p, li, pre, blockquote, h1, h2, h3, h4, h5, h6")
+      .forEach((block) => { block.prepend(" "); block.append(" "); });
+
+    const parts = [];
+    let pendingSpace = false;
+    const walker = document.createTreeWalker(copy, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const raw = node.data.replace(/\s+/gu, " ");
+      const text = raw.trim();
+      if (!text) {
+        pendingSpace ||= raw.length > 0;
+        continue;
+      }
+      const code = Boolean(node.parentElement.closest("code, pre"));
+      const previous = parts.at(-1);
+      const space = previous && (pendingSpace || raw.startsWith(" ")) ? " " : "";
+      if (previous?.code === code) {
+        previous.text += space + text;
+      } else {
+        if (space) parts.push({ text: space, code: false });
+        parts.push({ text, code });
+      }
+      pendingSpace = raw.endsWith(" ");
+    }
+    if (parts.length) return parts;
 
     const media = element.closest(turnSelector) ?? element;
     const filename = media.querySelector("[download]")?.getAttribute("download");
-    if (filename) return filename;
-    if (media.querySelector("img, video, audio, [data-testid*='attachment'], [data-testid*='file'], [data-user-message-file-icon]")) {
-      return "附件消息";
-    }
-    return "未命名提问";
+    const hasMedia = media.querySelector("img, video, audio, [data-testid*='attachment'], [data-testid*='file'], [data-user-message-file-icon]");
+    return [{ text: filename || (hasMedia ? "附件消息" : "未命名提问"), code: false }];
   }
 
   function collectMessages() {
     const found = [];
     const seen = new Set();
-    const main = document.querySelector("main") ?? document;
-    const codexTranscripts = Array.from(document.querySelectorAll(CODEX_TRANSCRIPT)).filter((transcript) =>
-      isVisible(transcript) && !transcript.closest("[data-rail-chat-transcript]") &&
-      Array.from(transcript.querySelectorAll(CODEX_MESSAGE)).some(isVisible));
-    const transcript = codexTranscripts.find((candidate) => main.contains(candidate)) ??
-      codexTranscripts[0] ?? main;
-    const selector = transcript.matches?.(CODEX_TRANSCRIPT) ? USER_MESSAGE : CHATGPT_MESSAGE;
-    for (const element of transcript.querySelectorAll(selector)) {
-      if (!isVisible(element) || element.parentElement.closest(selector)) continue;
-      const turn = element.closest(turnSelector);
+    const main = Array.from(document.querySelectorAll('main, [role="main"]')).find((element) =>
+      isVisible(element) && !element.closest(RAIL) && element.querySelector(MESSAGE_MARKERS));
+    const transcripts = Array.from(document.querySelectorAll(CODEX_TRANSCRIPT)).filter((element) =>
+      isVisible(element) && !element.closest(RAIL) && element.querySelector(MESSAGE_MARKERS));
+    const transcript = transcripts.find((element) => main?.contains(element)) ??
+      (main?.querySelector(CHATGPT_MARKERS) ? main : transcripts[0]) ?? main ?? document;
+    const selector = transcript.matches?.(CODEX_TRANSCRIPT) ? USER_MESSAGE : CHATGPT_MARKERS;
+
+    for (const marker of transcript.querySelectorAll(selector)) {
+      if (!isVisible(marker) || marker.closest(RAIL) || marker.parentElement.closest(selector)) continue;
+      const roleMarker = marker.matches(CHATGPT_USER_TURN) ?
+        Array.from(marker.querySelectorAll(CHATGPT_MESSAGE)).find(isVisible) : null;
+      const element = roleMarker ?? marker;
+      const turn = marker.closest(turnSelector);
       const key = element.getAttribute("data-message-id") ||
-        (element.matches(CHATGPT_MESSAGE) && turn?.getAttribute("data-testid")) || element;
+        (marker.matches(CHATGPT_MARKERS) && (turn?.getAttribute("data-testid") || marker.id)) || element;
       if (seen.has(key)) continue;
       seen.add(key);
-      found.push({ element, key, label: questionLabel(element) });
+
+      const parts = questionParts(element);
+      const label = parts.map(({ text }) => text).join("");
+      found.push({ element, key, label, parts, searchable: searchText(label) });
     }
     return found;
   }
 
   function updateActive(key) {
+    rows.get(activeKey)?.removeAttribute("aria-current");
     activeKey = key;
-    for (const [rowKey, row] of rows) {
-      if (rowKey === key) row.setAttribute("aria-current", "location");
-      else row.removeAttribute("aria-current");
-    }
+    rows.get(key)?.setAttribute("aria-current", "location");
   }
 
   function syncScroll() {
@@ -185,7 +215,7 @@
   }
 
   function render() {
-    const query = search.value.trim().toLocaleLowerCase();
+    const query = searchText(search.value);
     const previousFocus = root.activeElement;
     const focusedKey = previousFocus?.classList.contains("question") ?
       Array.from(rows).find(([, row]) => row === previousFocus)?.[0] : null;
@@ -194,19 +224,28 @@
 
     const items = document.createDocumentFragment();
     messages.forEach((message, index) => {
-      if (!message.label.toLocaleLowerCase().includes(query)) return;
+      if (!message.searchable.includes(query)) return;
       const item = document.createElement("li");
       const button = document.createElement("button");
       button.type = "button";
       button.className = "question";
-      button.title = message.label;
+      button.title = message.label.length > 1000 ? `${message.label.slice(0, 1000)}…` : message.label;
       const number = document.createElement("span");
       number.className = "number";
       number.setAttribute("aria-hidden", "true");
       number.textContent = String(index + 1).padStart(2, "0");
       const label = document.createElement("span");
       label.className = "question-label";
-      label.textContent = message.label;
+      label.dir = "auto";
+      for (const part of message.parts) {
+        if (part.code) {
+          const code = document.createElement("code");
+          code.textContent = part.text;
+          label.append(code);
+        } else {
+          label.append(part.text);
+        }
+      }
       button.append(number, label);
       button.addEventListener("click", () => jumpTo(message.key));
       item.append(button);
@@ -217,6 +256,7 @@
     list.parentElement.scrollTop = previousScroll;
     if (focusedKey !== null) rows.get(focusedKey)?.focus({ preventScroll: true });
 
+    launcher.hidden = !panel.hidden || !messages.length;
     launcherCount.hidden = !messages.length;
     launcherCount.textContent = String(messages.length);
     count.textContent = query ? `${rows.size} / ${messages.length} 条提问` : `本对话共 ${messages.length} 条提问`;
@@ -229,7 +269,12 @@
     refreshFrame = 0;
     const next = collectMessages();
     const changed = next.length !== messages.length || next.some((message, index) =>
-      message.key !== messages[index].key || message.label !== messages[index].label);
+      message.key !== messages[index].key || message.label !== messages[index].label ||
+      message.parts.length !== messages[index].parts.length ||
+      message.parts.some((part, partIndex) => {
+        const previous = messages[index].parts[partIndex];
+        return part.code !== previous.code || part.text !== previous.text;
+      }));
     messages = next;
     if (changed) render();
     queueScrollSync();
@@ -241,12 +286,12 @@
 
   function setOpen(open, returnFocus = false) {
     panel.hidden = !open;
-    launcher.hidden = open;
+    launcher.hidden = open || !messages.length;
     launcher.setAttribute("aria-expanded", String(open));
     if (open) {
       queueRefresh();
       closeButton.focus({ preventScroll: true });
-    } else if (returnFocus) {
+    } else if (returnFocus && !launcher.hidden) {
       launcher.focus({ preventScroll: true });
     }
   }
@@ -273,8 +318,7 @@
     for (const record of records) {
       const target = record.target instanceof Element ? record.target : record.target.parentElement;
       if (target?.closest(USER_MESSAGE) ||
-          (record.type === "attributes" && (["data-message-author-role", "data-user-message-bubble",
-            "data-thread-user-message-navigation-content"].includes(record.attributeName) || hasQuestion(target))) ||
+          (record.type === "attributes" && (ROLE_ATTRIBUTES.includes(record.attributeName) || hasQuestion(target))) ||
           Array.from(record.addedNodes).some(hasQuestion) ||
           Array.from(record.removedNodes).some(hasQuestion)) {
         queueRefresh();
@@ -288,14 +332,13 @@
     characterData: true,
     attributes: true,
     attributeFilter: [
-      "data-message-author-role", "data-message-id", "data-user-message-bubble",
-      "data-thread-user-message-navigation-content", "aria-hidden", "hidden", "inert",
+      ...ROLE_ATTRIBUTES, "data-message-id", "data-rail-chat-transcript", "aria-hidden", "hidden", "inert",
     ],
   });
-  new MutationObserver(updateTheme).observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ["class", "data-theme"],
-  });
+  const themeObserver = new MutationObserver(updateTheme);
+  const themeOptions = { attributes: true, attributeFilter: ["class", "data-theme"] };
+  themeObserver.observe(document.documentElement, themeOptions);
+  themeObserver.observe(document.body, themeOptions);
 
   launcher.addEventListener("click", () => setOpen(true));
   closeButton.addEventListener("click", () => setOpen(false, true));

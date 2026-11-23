@@ -2,7 +2,7 @@ const CHATGPT_QUESTION_TOC_STYLES = `
   :host {
     all: initial;
     position: fixed;
-    inset: auto 24px 30px auto;
+    inset: auto 24px 24px auto;
     z-index: 2147483000;
     display: block;
     isolation: isolate;
@@ -10,10 +10,10 @@ const CHATGPT_QUESTION_TOC_STYLES = `
     color: var(--ink);
     color-scheme: light;
     --surface: #fff;
-    --ink: #211b2e;
-    --muted: #6c647b;
-    --line: #eae5f1;
-    --field: #f7f5fa;
+    --ink: #222027;
+    --muted: #605d69;
+    --line: #e8e6ec;
+    --field: #f5f4f7;
     --accent: #5839a4;
     --accent-surface: #eee7ff;
     --accent-line: #d9c9f6;
@@ -23,11 +23,11 @@ const CHATGPT_QUESTION_TOC_STYLES = `
 
   :host([data-theme="dark"]) {
     color-scheme: dark;
-    --surface: #222026;
+    --surface: #242326;
     --ink: #f7f1ff;
     --muted: #b9afc8;
-    --line: #403747;
-    --field: #2c2733;
+    --line: #403c46;
+    --field: #302d35;
     --accent: #d4baff;
     --accent-surface: #382b50;
     --accent-line: #59437d;
@@ -73,8 +73,8 @@ const CHATGPT_QUESTION_TOC_STYLES = `
   .panel {
     display: flex;
     flex-direction: column;
-    width: min(334px, calc(100vw - 48px));
-    max-height: min(484px, calc(100dvh - 60px));
+    width: min(350px, calc(100vw - 48px));
+    max-height: min(520px, calc(100dvh - 56px));
     overflow: hidden;
     border: 1px solid var(--line);
     border-radius: 21px;
@@ -274,8 +274,19 @@ const CHATGPT_QUESTION_TOC_STYLES = `
     overflow: hidden;
     overflow-wrap: anywhere;
     -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
+    -webkit-line-clamp: 3;
   }
+
+  .question-label code {
+    padding-inline: .25em;
+    border-radius: 4px;
+    background: var(--field);
+    font: .9em ui-monospace, SFMono-Regular, Consolas, monospace;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+  }
+
+  .question[aria-current="location"] code { background: var(--surface); }
 
   .empty {
     padding: 25px 16px 30px;
@@ -284,9 +295,13 @@ const CHATGPT_QUESTION_TOC_STYLES = `
     font-size: 13px;
   }
 
+  @media (forced-colors: active) {
+    .question[aria-current="location"] { border-color: Highlight; }
+  }
+
   @media (max-width: 600px) {
-    :host { inset: auto 12px max(18px, env(safe-area-inset-bottom)) auto; }
-    .panel { width: min(334px, calc(100vw - 24px)); max-height: min(484px, 70dvh); }
+    :host { inset: auto max(12px, env(safe-area-inset-right)) calc(82px + env(safe-area-inset-bottom)) auto; }
+    .panel { width: min(350px, calc(100vw - 24px)); max-height: min(520px, 70dvh, calc(100dvh - 116px)); }
     input { font-size: 16px; }
   }
 `;
